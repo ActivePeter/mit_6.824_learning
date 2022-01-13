@@ -20,6 +20,8 @@ type TaskType int
 const (
 	TaskType_Map    TaskType = 1
 	TaskType_Reduce TaskType = 2
+
+	intermediate_file_pre string="wsi_"
 )
 
 //<-
@@ -39,6 +41,7 @@ type RequestTask_Reply struct {
 	task_type      TaskType
 	task_file_path string
 	task_key       int
+	n_reduce	int
 }
 
 //<-

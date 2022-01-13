@@ -1,7 +1,10 @@
 package mr
 
 import (
+	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 )
 import "net"
@@ -11,12 +14,13 @@ import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.
-	map_tasks      MapTasks
+	map_tasks    Tasks
+	reduce_tasks Tasks
+
 	map_done_files map[string]int
-
-	mu sync.Mutex
-
-	reduce_tasks ReduceTasks
+	mu             sync.Mutex
+	reduce_mode    bool
+	done           bool
 }
 type Task struct {
 	task_key  int
@@ -35,8 +39,19 @@ func (c *Coordinator) take_one_map_task() *Task {
 	}
 	return nil
 }
+func (c *Coordinator) take_one_reduce_task() *Task {
+	if len(c.reduce_tasks.unhandled_tasks) > 0 {
+		for i := range c.reduce_tasks.unhandled_tasks {
+			task := c.reduce_tasks.unhandled_tasks[i] //暂存第i
+			delete(c.reduce_tasks.unhandled_tasks, i) //移除第i
+			c.reduce_tasks.handling_tasks[i] = task
+			return &task
+		}
+	}
+	return nil
+}
 
-type MapTasks struct {
+type Tasks struct {
 	n_sum int
 
 	unhandled_tasks map[int]Task
@@ -44,7 +59,7 @@ type MapTasks struct {
 	handled_tasks   map[int]Task
 }
 
-func (mt *MapTasks) load_tasks(files []string) {
+func (mt *Tasks) load_tasks(files []string) {
 	mt.n_sum = len(files)
 	for i := 0; i < len(files); i++ {
 		mt.unhandled_tasks[i] = Task{
@@ -54,17 +69,17 @@ func (mt *MapTasks) load_tasks(files []string) {
 		}
 	}
 }
-func (mt *MapTasks) is_all_done() bool {
+func (mt *Tasks) is_all_done() bool {
 	return mt.n_sum == len(mt.handled_tasks)
 }
 
-type ReduceTasks struct {
-	n_sum int
-
-	unhandled_tasks map[int]Task
-	handling_tasks  map[int]Task
-	handled_tasks   map[int]Task
-}
+//type ReduceTasks struct {
+//	n_sum int
+//
+//	unhandled_tasks map[int]Task
+//	handling_tasks  map[int]Task
+//	handled_tasks   map[int]Task
+//}
 
 // Your code here -- RPC handlers for the worker to call.
 
@@ -81,21 +96,61 @@ func (c *Coordinator) RequestTask_Handler(args *RequestTask_Args, reply *Request
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	maptask := c.take_one_map_task()
+
+	//1. 有未完成的maptask,
 	if maptask != nil {
 		reply.task_type = TaskType_Map
 		reply.task_file_path = maptask.task_str
 		reply.task_key = maptask.task_key
 		//reply one maptask
+		return nil
 	}
+	//2. map 都完成了，就准备发送 reduce
 	if c.map_tasks.is_all_done() {
-		//map 都完成了，就准备发送 reduce
-
-	} else {
+		//1.检查是否切换到reduce状态，并作初始化
+		c.switch_2_reduce_mode_if_not()
+		reduce_task := c.take_one_reduce_task()
+		if reduce_task != nil {
+			reply.task_type = TaskType_Reduce
+			reply.task_file_path = reduce_task.task_str
+			reply.task_key = reduce_task.task_key
+		} else {
+			println("request task failed, " +
+				"tasks were all finished")
+			if c.reduce_tasks.is_all_done() {
+				c.done = true
+			}
+		}
+	} else { //3. 存在map未完成，但是都在执行中，那么就输出分派失败的信息
 		println("request task failed, " +
 			"no unhandled map task, " +
 			"exist map task being handled")
 	}
 	return nil
+}
+
+//检查是否切换到reduce状态，并作初始化
+func (c *Coordinator) switch_2_reduce_mode_if_not() {
+	if !c.reduce_mode {
+		c.reduce_mode = true
+		for k, _ := range c.map_done_files {
+			result := strings.Split(k, intermediate_file_pre)
+			if len(result) == 2 {
+				//从文件路径中提取对应的reduce任务编号
+				v, _ := strconv.Atoi(result[1])
+				t:=Task{
+					task_type: TaskType_Reduce,
+					task_str: k,
+					task_key: v,
+				}
+				c.reduce_tasks.unhandled_tasks[v]=t
+				fmt.Printf("reduce task load %+v",t)
+
+			} else {
+				println("error: wrong map_done_files record ",result)
+			}
+		}
+	}
 }
 func (c *Coordinator) MapDoneArgs_handler(args *MapDoneArgs) error {
 	c.mu.Lock()
@@ -134,11 +189,11 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	ret := false
+	//ret := false
 
 	// Your code here.
 
-	return ret
+	return c.done
 }
 
 //
@@ -150,9 +205,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	c.map_tasks.load_tasks(files)
-
-	// Your code here.
-
+	c.done = false
+	c.reduce_mode = false
 	c.server()
 	return &c
 }
