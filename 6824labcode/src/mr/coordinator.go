@@ -132,7 +132,6 @@ func (c *Coordinator) RequestTask_Handler(args *RequestTask_Args, reply *Request
 //检查是否切换到reduce状态，并作初始化
 func (c *Coordinator) switch_2_reduce_mode_if_not() {
 	if !c.reduce_mode {
-		c.reduce_mode = true
 		for k, _ := range c.map_done_files {
 			result := strings.Split(k, intermediate_file_pre)
 			if len(result) == 2 {
@@ -144,12 +143,15 @@ func (c *Coordinator) switch_2_reduce_mode_if_not() {
 					task_key: v,
 				}
 				c.reduce_tasks.unhandled_tasks[v]=t
+
 				fmt.Printf("reduce task load %+v",t)
 
 			} else {
 				println("error: wrong map_done_files record ",result)
 			}
 		}
+		c.reduce_tasks.n_sum= len(c.reduce_tasks.unhandled_tasks)
+		c.reduce_mode = true
 	}
 }
 func (c *Coordinator) MapDoneArgs_handler(args *MapDoneArgs) error {
