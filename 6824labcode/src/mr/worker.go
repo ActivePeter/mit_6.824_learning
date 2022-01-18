@@ -64,8 +64,9 @@ func reduce_worker(
 	if key_values != nil {
 		oname := "mr-out-" + strconv.Itoa(task.Vtask_key)
 		ofile, _ := os.Create(oname)
-
+		//log.Println("reduce test1", task.Vtask_key)
 		for key, values := range key_values {
+			log.Println("reduce test in for", task.Vtask_key)
 			values_arr := make([]string, values.Len())
 			index := 0
 			for i := values.Front(); i != nil; i = i.Next() {

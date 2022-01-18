@@ -136,9 +136,15 @@ func (c *Coordinator) RequestTask_handler(args *RequestTask_Args, reply *Request
 			}
 		}
 	} else { //3. 存在map未完成，但是都在执行中，那么就输出分派失败的信息
-		//println("request task failed, " +
-		//	"no unhandled map task, " +
-		//	"exist map tasks are being handled")
+		tasks:=""
+		for _, task := range c.map_tasks.handling_tasks {
+			tasks=tasks+" "+strconv.Itoa(task.task_key)
+		}
+		println("request task failed, " +
+			"no unhandled map task, " +
+			"exist map tasks are being handled\n   ",
+			tasks,
+		)
 	}
 	return nil
 }
