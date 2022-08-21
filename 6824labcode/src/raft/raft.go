@@ -18,14 +18,16 @@ package raft
 //
 
 import (
-//	"bytes"
+	"math/rand"
+	"time"
+
+	//	"bytes"
 	"sync"
 	"sync/atomic"
 
-//	"6.824/labgob"
+	//	"6.824/labgob"
 	"6.824/labrpc"
 )
-
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -49,11 +51,19 @@ type ApplyMsg struct {
 	SnapshotTerm  int
 	SnapshotIndex int
 }
+type PeerType int
+
+const (
+	PeerTypeFollower PeerType = iota
+	PeerTypeCandidate
+	PeerTypeLeader
+)
 
 //
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
+	rd        sync.Mutex          // Lock to protect shared access to this peer's state
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
@@ -64,7 +74,18 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	//per持久化
+	perCurrentTerm   int // 当前已知任期号
+	perVotedFor      int // 当前任期给谁了
+	peertype         PeerType
+	cancel_candidate bool
 }
+
+const (
+	//单位ms
+	electTimeoutMax = 300
+	electTimeoutMin = 200
+)
 
 // return currentTerm and whether this server
 // believes it is the leader.
@@ -72,6 +93,10 @@ func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
+	rf.mu.Lock()
+	term = rf.perCurrentTerm
+	isleader = rf.peertype == PeerTypeLeader
+	rf.mu.Unlock()
 	// Your code here (2A).
 	return term, isleader
 }
@@ -91,7 +116,6 @@ func (rf *Raft) persist() {
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
 }
-
 
 //
 // restore previously persisted state.
@@ -115,7 +139,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
 //
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
@@ -136,13 +159,14 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term    int
+	FromWho int
 }
 
 //
@@ -151,13 +175,54 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Ok bool
 }
 
 //
 // example RequestVote RPC handler.
 //
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+func (rf *Raft) HandleRequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	//println(rf.me, "handle ", args.FromWho, "'s request vote")
+	rf.mu.Lock()
+	//rf.mu.Lock()
 	// Your code here (2A, 2B).
+	// 1.
+	switch rf.peertype {
+	case PeerTypeCandidate:
+		if args.Term >= rf.perCurrentTerm {
+			//fmt.Printf("%v transfer cand to %v\n", rf.me, args.FromWho)
+			rf.perCurrentTerm = args.Term
+			rf.peertype = PeerTypeFollower
+			rf.perVotedFor = args.FromWho
+			reply.Ok = true
+		} else {
+			reply.Ok = false
+		}
+
+		//非候选者，直接同意
+	case PeerTypeFollower:
+		if args.Term > rf.perCurrentTerm || rf.perVotedFor == -1 {
+			reply.Ok = true
+			rf.perCurrentTerm = args.Term
+			rf.perVotedFor = args.FromWho
+		} else {
+			//fmt.Printf("follower dont agree %v %v %v\n", args.Term, rf.perCurrentTerm, rf.peertype)
+			reply.Ok = false
+		}
+	case PeerTypeLeader:
+		//if args.Term > rf.perCurrentTerm {
+		//	println("leaderleave4", rf.me)
+		//	rf.peertype = PeerTypeFollower
+		//	reply.Ok = true
+		//} else
+		{
+
+			reply.Ok = false
+		}
+		//return
+	}
+
+	rf.mu.Unlock()
 }
 
 //
@@ -190,10 +255,39 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	ok := rf.peers[server].Call("Raft.HandleRequestVote", args, reply)
 	return ok
 }
 
+type RequestHeartBeatArgs struct {
+	Term int
+}
+
+type RequestHeartBeatReply struct {
+	Expire  bool
+	Newterm int
+}
+
+func (rf *Raft) HandleRequestHeartBeat(args *RequestHeartBeatArgs, reply *RequestHeartBeatReply) {
+	rf.mu.Lock()
+	if args.Term >= rf.perCurrentTerm {
+		rf.perCurrentTerm = args.Term
+		if rf.peertype == PeerTypeCandidate {
+			rf.cancel_candidate = true
+		} else if rf.peertype == PeerTypeLeader {
+			//println("leaderleave3", rf.me)
+			rf.peertype = PeerTypeFollower
+		}
+	} else {
+		reply.Expire = true
+		reply.Newterm = rf.perCurrentTerm
+	}
+	rf.mu.Unlock()
+}
+func (rf *Raft) sendRequestHeartBeat(server int, args *RequestHeartBeatArgs, reply *RequestHeartBeatReply) bool {
+	ok := rf.peers[server].Call("Raft.HandleRequestHeartBeat", args, reply)
+	return ok
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -215,7 +309,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -241,15 +334,197 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func initRand() {
+	rand.Seed(time.Now().UnixMilli())
+}
+func (rf *Raft) randElectTimeoutAndSleep() {
+	timeout := rand.Intn(electTimeoutMax-electTimeoutMin) + electTimeoutMin
+	time.Sleep(time.Duration(timeout) * time.Millisecond)
+}
+
+func (rf *Raft) becomeCandi() {
+	rf.mu.Lock()
+	if rf.peertype == PeerTypeLeader {
+		rf.mu.Unlock()
+		return
+	}
+	////如果已经vote了，就取消
+	//if rf.perVotedFor != rf.me && rf.perVotedFor != -1 {
+	//	//fmt.Printf("%v voted %v, cancel candidate\n", rf.me, rf.perVotedFor)
+	//	rf.mu.Unlock()
+	//	return
+	//}
+	//rf.perVotedFor = rf.me
+	rf.perCurrentTerm++
+	rf.perVotedFor = -1 //任期改变，votedfor必须跟着变
+	//fmt.Printf("%v start candidate,term:%v\n", rf.me, rf.perCurrentTerm)
+	rf.peertype = PeerTypeCandidate
+
+	//getvote := 1
+	//var votes []int
+
+	rf.mu.Unlock()
+	type Res struct {
+		rpl *RequestVoteReply
+		who int
+	}
+	res := make(chan Res)
+	for key := range rf.peers {
+
+		rf.mu.Lock()
+		term := rf.perCurrentTerm
+		me := rf.me
+		rf.mu.Unlock()
+		if key == me {
+			continue
+		}
+		taskkey := key
+
+		send := func() {
+			reply := &RequestVoteReply{}
+			if !rf.sendRequestVote(taskkey, &RequestVoteArgs{
+				Term:    term,
+				FromWho: me,
+			}, reply) {
+				//出错
+				//panic("sendRequestVote fail?")
+				reply.Ok = false
+			}
+			res <- Res{
+				rpl: reply,
+				who: taskkey,
+			}
+		}
+		go send()
+		//rf.mu.Unlock()
+	}
+	peercnt := len(rf.peers)
+	okcnt := 1
+	//fmt.Printf("recv ")
+	for i := 0; i < peercnt-1; i++ {
+		take := <-res
+		if take.rpl.Ok {
+			//fmt.Printf("%v,", take.who)
+			okcnt++
+			if (peercnt%2 == 0 && okcnt >= peercnt/2) ||
+				(peercnt%2 == 1 && okcnt > peercnt/2) {
+				break
+			}
+		}
+	}
+	//println(okcnt)
+	rf.mu.Lock()
+	{
+		if rf.peertype == PeerTypeFollower {
+			//转让？
+			rf.mu.Unlock()
+			return
+		}
+		//println("cadisucc", rf.me)
+		//println("finish", okcnt)
+		if peercnt%2 == 0 {
+			if okcnt >= peercnt/2 {
+
+				//println(rf.me, "becomeleader2")
+				rf.peertype = PeerTypeLeader
+
+				rf.mu.Unlock()
+				return
+			}
+		} else {
+			if okcnt > peercnt/2 {
+				//println(rf.me, "becomeleader")
+				rf.peertype = PeerTypeLeader
+
+				rf.mu.Unlock()
+				return
+			}
+		}
+	}
+
+	//rf.mu.Lock()
+	rf.peertype = PeerTypeFollower
+	rf.mu.Unlock()
+}
+func (rf *Raft) holdLeader() {
+	reply := &RequestHeartBeatReply{
+		Expire: false,
+	}
+	if rf.peertype == PeerTypeLeader {
+		//println("holdleader:", rf.me, "term:", rf.perCurrentTerm)
+	}
+	for rf.peertype == PeerTypeLeader {
+		failcnt := 0
+		for key, _ := range rf.peers {
+			if key == rf.me {
+				continue
+			}
+			term := rf.perCurrentTerm
+			key1 := key
+			call := func() {
+				res := rf.sendRequestHeartBeat(key1, &RequestHeartBeatArgs{
+					Term: term,
+				}, reply)
+				rf.mu.Lock()
+				type_ := rf.peertype
+				rf.mu.Unlock()
+				if type_ == PeerTypeLeader {
+					if !res {
+						failcnt++
+						//if rf.peertype==PeerTypeLeader{
+						if failcnt == len(rf.peers)-1 {
+							//println("leaderleave2", rf.me)
+							rf.mu.Lock()
+							rf.peertype = PeerTypeFollower
+							rf.mu.Unlock()
+						}
+						//}
+					} else if reply.Expire {
+						//println("leaderleave1", rf.me)
+						rf.mu.Lock()
+						rf.peertype = PeerTypeFollower
+						rf.perCurrentTerm = reply.Newterm
+						rf.mu.Unlock()
+						return
+					}
+				}
+			}
+			go call()
+
+			//if failcnt > 0 {
+			//	println("holdleader failcnt > 0", rf.me, "term:", rf.perCurrentTerm, failcnt)
+			//}
+			//if failcnt == len(rf.peers)-1 {
+			//	println("leaderleave2", rf.me)
+			//	rf.peertype = PeerTypeFollower
+			//	return
+			//}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
+	initRand()
 	for rf.killed() == false {
-
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-
+		//1.随机选取超时
+		rf.randElectTimeoutAndSleep()
+		//2.0 如果有心跳，那么就取消竞选
+		rf.mu.Lock()
+		if rf.cancel_candidate {
+			rf.cancel_candidate = false
+			rf.mu.Unlock()
+			continue
+		}
+		rf.mu.Unlock()
+		//2.成为竞选者
+		rf.becomeCandi() //有vote就代表最近有收到heartbeat
+		rf.holdLeader()  //如果成了leader就在里面循环
 	}
 }
 
@@ -270,6 +545,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.perCurrentTerm = 0
+	rf.perVotedFor = -1
+	rf.peertype = PeerTypeFollower
+	rf.cancel_candidate = false
 
 	// Your initialization code here (2A, 2B, 2C).
 
@@ -278,7 +557,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
 
 	return rf
 }
