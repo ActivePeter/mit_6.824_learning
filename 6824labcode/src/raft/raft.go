@@ -89,10 +89,12 @@ type Raft struct {
 	leader_matchIndex []int //每个服务器已经持久化的最高索引
 	applyCh           chan ApplyMsg
 	agreementStates   *AgreementStates
+
+	lastheartbeatMillis atomic.Value
 }
 type AgreementStates struct {
 	notAppendedEntries []Entry
-	appendChan         []*chan Entry //用于向各个客户端广播新的append entry
+	appendChan         []EntryQueue //用于向各个客户端广播新的append entry
 	//lackNotifyCond            []*sync.Cond
 	curAppenddingEntry        Entry
 	curAppenddingEntrySuccCnt int
@@ -107,10 +109,9 @@ func AgreementStates_make(peercnt int) *AgreementStates {
 		//lackSyncing: false,
 	}
 	ret.notAppendedEntries = make([]Entry, 0)
-	ret.appendChan = make([]*chan Entry, peercnt)
+	ret.appendChan = make([]EntryQueue, peercnt)
 	for i := 0; i < peercnt; i++ {
-		chan1 := make(chan Entry, 10)
-		ret.appendChan[i] = &chan1
+		ret.appendChan[i] = EntryQueue{}
 	}
 	ret.lackSyncing = make([]bool, peercnt)
 	for i := 0; i < peercnt; i++ {
@@ -126,8 +127,8 @@ func AgreementStates_make(peercnt int) *AgreementStates {
 
 const (
 	//单位ms
-	electTimeoutMax = 300
-	electTimeoutMin = 200
+	electTimeoutMax = 350
+	electTimeoutMin = 250
 )
 
 // return currentTerm and whether this server
@@ -172,9 +173,9 @@ func (rf *Raft) nolock_stateTrans_leader2follwer(term int) {
 		//for _, v := range states.commitChan {
 		//	close(*v)
 		//}
-		for _, v := range states.appendChan {
-			close(*v)
-		}
+		//for _, v := range states.appendChan {
+		//	close(*v)
+		//}
 	}
 	rf.perCurrentTerm = term
 	rf.alignEntries2CommitIndex()
@@ -406,16 +407,18 @@ func (rf *Raft) nolock_commitEntry(entryidx int) {
 	for i := rf.commitIndex + 1; i <= entryidx; i++ {
 		entryidx := i
 
-		rf.applyCh <- ApplyMsg{
+		msg := ApplyMsg{
 			CommandValid: true,
 			Command:      rf.perEntries[entryidx].Cmd,
 			CommandIndex: entryidx + 1,
 		}
+		rf.applyCh <- msg
+
+		fmt.Printf("%v commit at %v with %v\n", rf.me, entryidx, msg)
 		//if(rf.peertype==PeerTypeLeader){
 		//	rf.mu.Lock()
 	}
 	rf.commitIndex = entryidx //变更到最新的commit index
-	fmt.Printf("%v commit at %v with %v\n", rf.me, entryidx, rf.perEntries[entryidx])
 	//rf.mu.Unlock()
 	//}
 }
@@ -502,12 +505,20 @@ func (rf *Raft) HandleAppendEntryRequest(args *AppendEntryRequest, reply *Append
 		reply.Success = false
 		return
 	}
+	if len(rf.perEntries) > args.PrevLogIndex+1 {
+
+		rf.perEntries = rf.perEntries[:args.PrevLogIndex+1]
+	}
+
 	reply.Success = true
 	//4. 追加日志中尚未存在的任何新条目
 	rf.nolock_appendEntries(args.Entries)
 	//5. 如果领导者的已知已经提交的最高的日志条目的索引leaderCommit 大于 接收者的已知已经提交的最高 的日志条目的索引commitIndex
 	// 则把 接收者的已知已经提交的最高的日志条目的索引commitIndex 重置 为 领导者的已知已经提交的最高的日志条目的索引leaderCommit 或者是 上一个新条目的索引 取两者的 最小值
 	if args.LeaderCommit > rf.commitIndex {
+		if len(args.Entries) == 0 {
+			println("heart beat handle by", rf.me, ",leadercommit", args.LeaderCommit)
+		}
 		rf.nolock_commitEntry(UtilMin(args.LeaderCommit, args.PrevLogIndex+1))
 		//rf.commitIndex =
 	}
@@ -603,6 +614,13 @@ func (rf *Raft) leaderHandleOneFollowerEntryAppend(entry Entry) {
 				rf.agreementStates.notAppendedEntries = rf.agreementStates.notAppendedEntries[1:]
 				rf.agreementStates.curAppenddingEntrySuccCnt = 0
 				rf.nolock_commitEntry(entry.Index)
+
+				rf.sendImmediateHeartBeat2()
+				//for key := range rf.peers {
+				//	if key == rf.me {
+				//		continue //跳过自己
+				//	}
+				//}
 				//entries := make([]Entry, 1)
 				//entries[0] = entry
 				//rf.nolock_appendEntries(entries) //确认append了
@@ -639,18 +657,21 @@ func (rf *Raft) StartAgreementCoroutineIfNot() {
 							break
 						}
 						//println("follower send coroutine", key, " waiting for new entry or lackcheck")
-						select {
-						case entry, ok := <-*rf.agreementStates.appendChan[key]:
-							{ //新的entry
-								if !ok {
-									//println("end agreement co", key)
-									return
-								}
+						rf.mu.Lock()
+						if rf.agreementStates == nil {
+							return
+						}
+						e := rf.agreementStates.appendChan[key].Pop()
+						rf.mu.Unlock()
+						//select
+						{
+							if e != nil { //新的entry
+								entry := *e
 								if rf.peertype != PeerTypeLeader {
 									//终止协程
 									return
 								}
-								fmt.Printf("follower send coroutine %v got one entry to send %v\n", key, entry)
+								//fmt.Printf("follower send coroutine %v got one entry to send %v\n", key, entry)
 								pindex, pentry := rf.nolock_getPrevOfIndexEntry(entry.Index) //相对于当前这个append之前的一次entry
 								////循环append一个entry直到成功
 								backwardTryStack := make([]int, 0) //对应
@@ -658,6 +679,9 @@ func (rf *Raft) StartAgreementCoroutineIfNot() {
 								for {
 									if rf.agreementStates == nil {
 										//终止协程
+										return
+									}
+									if rf.perCurrentTerm > entry.Term {
 										return
 									}
 									reply := AppendEntryReply{}
@@ -753,7 +777,7 @@ func (rf *Raft) StartAgreementCoroutineIfNot() {
 							//case rf.agreementStates.lackNotifyCond[key].Wait():
 
 						}
-
+						time.Sleep(1 * time.Millisecond)
 					}
 				}
 				go call()
@@ -769,8 +793,6 @@ func (rf *Raft) StartAgreementCoroutineIfNot() {
 
 func (rf *Raft) StartAgreement(entry Entry) {
 	rf.StartAgreementCoroutineIfNot()
-
-
 
 	fmt.Printf("new entry in :%v\n", entry)
 	broadcast := func() {
@@ -798,7 +820,7 @@ func (rf *Raft) StartAgreement(entry Entry) {
 				rf.mu.Unlock()
 				return
 			}
-			*rf.agreementStates.appendChan[key] <- entry
+			rf.agreementStates.appendChan[key].Push(entry)
 			rf.mu.Unlock()
 			//println("sent entry to client ", key)
 			//}
@@ -930,7 +952,9 @@ func (rf *Raft) becomeCandi() {
 
 		send := func() {
 			reply := &RequestVoteReply{}
+			rf.mu.Lock()
 			previndex, prevEntry := rf.nolock_getPrevOfIndexEntry(rf.commitIndex + 1)
+			rf.mu.Unlock()
 			if !rf.sendRequestVote(taskkey, &RequestVoteArgs{
 				Term:         term,
 				FromWho:      me,
@@ -1012,6 +1036,10 @@ func (rf *Raft) alignEntries2CommitIndex() {
 	}
 }
 
+func (rf *Raft) sendImmediateHeartBeat2() {
+	rf.lastheartbeatMillis.Store(rf.lastheartbeatMillis.Load().(int64) - 70)
+}
+
 //给其他服务器发心跳
 func (rf *Raft) holdLeader() {
 	rf.mu.Lock()
@@ -1021,78 +1049,88 @@ func (rf *Raft) holdLeader() {
 	}
 	rf.mu.Unlock()
 	for rf.peertype == PeerTypeLeader {
-		failcnt := 0
-		//println("leader heartbeat", rf.me, "term:", rf.perCurrentTerm)
-		for key, _ := range rf.peers {
-			if key == rf.me {
-				continue
-			}
-			term := rf.perCurrentTerm
-			key1 := key
-			call := func() {
-				pi, pe := rf.nolock_getPrevEntry()
-				reply := &AppendEntryReply{}
-				//println("leader heart beat",rf.me,"to",key1)
-				res := rf.sendRequestHeartBeat(key1, &AppendEntryRequest{
-					Term:         term,
-					LeaderId:     rf.me,
-					PrevLogIndex: pi,
-					PrevLogTerm:  pe.Term,
-					LeaderCommit: rf.commitIndex,
-				}, reply)
-				//rf.mu.Lock()
-				type_ := rf.peertype
-				if type_ == PeerTypeLeader {
-					if !res {
-						failcnt++
-						//if rf.peertype==PeerTypeLeader{
-						if failcnt == len(rf.peers)-1 {
-							//println("leaderleave2", rf.me)
-							//println("_4")
-							rf.mu.Lock()
-							rf.nolock_stateTrans_leader2follwer(rf.perCurrentTerm)
-							rf.mu.Unlock()
-						}
-						//}
-					} else {
-						//fmt.Printf("                  sendRequestHeartBeat reply %+v ,cur term:%v, me:%v\n", reply, rf.perCurrentTerm, rf.me)
-						if reply.Term > rf.perCurrentTerm {
-							//println("leader term old and leave", rf.me)
-							rf.mu.Lock()
-							//println("_5")
-							rf.nolock_stateTrans_leader2follwer(reply.Term)
-							rf.mu.Unlock()
-							return
-						} else if !reply.Success {
 
-							////确保append entry发送协程启动
-							//rf.StartAgreementCoroutineIfNot()
-							////补充发送缺失的append entry
-							//rf.mu.Lock()
-							//if !rf.agreementStates.lackSyncing[key1] {
-							//	rf.agreementStates.lackSyncing[key1] = true
-							//	println("start lackSync", key1, reply.NeedLogIndex)
-							//	*rf.agreementStates.appendChan[key1] <- rf.perEntries[reply.NeedLogIndex]
+		now := time.Now().UnixMilli()
+
+		last := rf.lastheartbeatMillis.Load().(int64)
+		if now-last > 100 {
+			rf.lastheartbeatMillis.Store(now)
+			failcnt := 0
+			//println("leader heartbeat", rf.me, "term:", rf.perCurrentTerm)
+			for key, _ := range rf.peers {
+				if key == rf.me {
+					continue
+				}
+				term := rf.perCurrentTerm
+				key1 := key
+				call := func() {
+					pi, pe := rf.nolock_getPrevEntry()
+					reply := &AppendEntryReply{}
+					//println("leader heart beat",rf.me,"to",key1)
+					res := rf.sendRequestHeartBeat(key1, &AppendEntryRequest{
+						Term:         term,
+						LeaderId:     rf.me,
+						PrevLogIndex: pi,
+						PrevLogTerm:  pe.Term,
+						LeaderCommit: rf.commitIndex,
+					}, reply)
+					//rf.mu.Lock()
+					type_ := rf.peertype
+					if type_ == PeerTypeLeader {
+						if !res {
+							failcnt++
+							//if rf.peertype==PeerTypeLeader{
+							if failcnt == len(rf.peers)-1 {
+								//println("leaderleave2", rf.me)
+								//println("_4")
+								rf.mu.Lock()
+								rf.nolock_stateTrans_leader2follwer(rf.perCurrentTerm)
+								rf.mu.Unlock()
+							}
 							//}
-							//rf.mu.Unlock()
-							////rf.agreementStates.lackNotifyCond[key1].Signal()
+						} else {
+							//fmt.Printf("                  sendRequestHeartBeat reply %+v ,cur term:%v, me:%v\n", reply, rf.perCurrentTerm, rf.me)
+							if reply.Term > rf.perCurrentTerm {
+								//println("leader term old and leave", rf.me)
+								rf.mu.Lock()
+								//println("_5")
+								rf.nolock_stateTrans_leader2follwer(reply.Term)
+								rf.mu.Unlock()
+								return
+							} else if !reply.Success {
+
+								////确保append entry发送协程启动
+								//rf.StartAgreementCoroutineIfNot()
+								////补充发送缺失的append entry
+								//rf.mu.Lock()
+								//if !rf.agreementStates.lackSyncing[key1] {
+								//	rf.agreementStates.lackSyncing[key1] = true
+								//	println("start lackSync", key1, reply.NeedLogIndex)
+								//	*rf.agreementStates.appendChan[key1] <- rf.perEntries[reply.NeedLogIndex]
+								//}
+								//rf.mu.Unlock()
+								////rf.agreementStates.lackNotifyCond[key1].Signal()
+							}
 						}
 					}
+					//rf.mu.Unlock()
 				}
-				//rf.mu.Unlock()
-			}
-			go call()
+				go call()
 
-			//if failcnt > 0 {
-			//	println("holdleader failcnt > 0", rf.me, "term:", rf.perCurrentTerm, failcnt)
-			//}
-			//if failcnt == len(rf.peers)-1 {
-			//	println("leaderleave2", rf.me)
-			//	rf.peertype = PeerTypeFollower
-			//	return
-			//}
+				//if failcnt > 0 {
+				//	println("holdleader failcnt > 0", rf.me, "term:", rf.perCurrentTerm, failcnt)
+				//}
+				//if failcnt == len(rf.peers)-1 {
+				//	println("leaderleave2", rf.me)
+				//	rf.peertype = PeerTypeFollower
+				//	return
+				//}
+			}
+
+		} else {
+
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(1 * time.Millisecond)
 	}
 }
 
@@ -1143,6 +1181,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.cancel_start_candidate = false
 	rf.applyCh = applyCh
 	rf.commitIndex = -1
+	rf.lastheartbeatMillis.Store(time.Now().UnixMilli())
 
 	// Your initialization code here (2A, 2B, 2C).
 

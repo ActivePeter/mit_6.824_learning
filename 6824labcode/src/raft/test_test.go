@@ -145,10 +145,10 @@ func TestBasicAgree2Bxiang153(t *testing.T) {
 		xindex := cfg.one(index*100, servers, false)
 
 		if xindex != index {
-			println("index", index, xindex)
+			//println("index", index, xindex)
 			t.Fatalf("got index %v but expected %v", xindex, index)
 		} else {
-			println("index", index, xindex)
+			//println("index", index, xindex)
 		}
 	}
 	cfg.end()
@@ -449,7 +449,6 @@ func TestBackup2B(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		cfg.rafts[leader1].Start(rand.Int())
 	}
-
 	time.Sleep(RaftElectionTimeout / 2)
 
 	fmt.Printf("****** disco %v %v\n",
@@ -509,7 +508,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.one(rand.Int(), servers, true)
 
 	cfg.end()
-}
+} //ok
 
 func TestCount2B(t *testing.T) {
 	servers := 3

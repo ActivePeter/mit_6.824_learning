@@ -138,9 +138,9 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	v := m.Command
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
-			log.Printf("%v: log %v; server %v\n     old:%v\n", i, cfg.logs[i], cfg.logs[j],old)
+			//log.Printf("%v: log %v; server %v\n     old:%v\n", i, cfg.logs[i], cfg.logs[j],old)
 			// some server has already committed a different value for this entry!
-			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
+			err_msg = fmt.Sprintf("commit index:%v server:%v command:%v != server:%v %v",
 				m.CommandIndex, i, m.Command, j, old)
 		}
 	}
@@ -529,16 +529,16 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd1 == cmd {
-						fmt.Printf("%v servers think a log entry is committed same,index:%v,"+
-							"cmd is:%v\n", nd, index, cmd)
+						//fmt.Printf("%v servers think a log entry is committed same,index:%v,"+
+						//	"cmd is:%v\n", nd, index, cmd)
 						// and it was the command we submitted.
 						return index
 					} else {
-						fmt.Printf("%v servers think a log entry is committed not same,index:%v,"+
-							"should be:%v,is:%v\n", nd, index, cmd, cmd1)
+						//fmt.Printf("%v servers think a log entry is committed not same,index:%v,"+
+						//	"should be:%v,is:%v\n", nd, index, cmd, cmd1)
 					}
 				} else {
-					println(nd, "__servers think a log entry is committed", cmd1, cmd, "index", index)
+					//println(nd, "__servers think a log entry is committed", cmd1, cmd, "index", index)
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
