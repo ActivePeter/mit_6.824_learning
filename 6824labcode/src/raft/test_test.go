@@ -104,7 +104,7 @@ func TestManyElections2A(t *testing.T) {
 
 	cfg.checkOneLeader()
 
-	iters := 10
+	iters := 3
 	for ii := 1; ii < iters; ii++ {
 		// disconnect three nodes
 		i1 := rand.Int() % servers
@@ -128,14 +128,14 @@ func TestManyElections2A(t *testing.T) {
 	cfg.end()
 }
 
-func TestBasicAgree2B(t *testing.T) {
+func TestBasicAgree2Bxiang153(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): basic agreement")
 
-	iters := 3
+	iters := 100
 	for index := 1; index < iters+1; index++ {
 		nd, _ := cfg.nCommitted(index)
 		if nd > 0 {
@@ -143,13 +143,16 @@ func TestBasicAgree2B(t *testing.T) {
 		}
 
 		xindex := cfg.one(index*100, servers, false)
+
 		if xindex != index {
+			println("index", index, xindex)
 			t.Fatalf("got index %v but expected %v", xindex, index)
+		} else {
+			println("index", index, xindex)
 		}
 	}
-
 	cfg.end()
-}
+} //ok
 
 //
 // check, based on counting bytes of RPCs, that
@@ -184,7 +187,7 @@ func TestRPCBytes2B(t *testing.T) {
 	}
 
 	cfg.end()
-}
+} //ok
 
 func TestFailAgree2B(t *testing.T) {
 	servers := 3
@@ -198,7 +201,7 @@ func TestFailAgree2B(t *testing.T) {
 	// disconnect one follower from the network.
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 1) % servers)
-
+	println("___cfg.disconnect((leader + 1) % servers)", (leader+1)%servers)
 	// the leader and remaining follower should be
 	// able to agree despite the disconnected follower.
 	cfg.one(102, servers-1, false)
@@ -207,6 +210,7 @@ func TestFailAgree2B(t *testing.T) {
 	cfg.one(104, servers-1, false)
 	cfg.one(105, servers-1, false)
 
+	println("________________________________________cfg.connect((leader + 1) % servers)", (leader+1)%servers)
 	// re-connect
 	cfg.connect((leader + 1) % servers)
 
@@ -218,7 +222,7 @@ func TestFailAgree2B(t *testing.T) {
 	cfg.one(107, servers, true)
 
 	cfg.end()
-}
+} //ok
 
 func TestFailNoAgree2B(t *testing.T) {
 	servers := 5
@@ -231,6 +235,12 @@ func TestFailNoAgree2B(t *testing.T) {
 
 	// 3 of 5 followers disconnect
 	leader := cfg.checkOneLeader()
+
+	println()
+	println("************************************ disco", (leader+1)%servers,
+		(leader+2)%servers,
+		(leader+3)%servers)
+	println()
 	cfg.disconnect((leader + 1) % servers)
 	cfg.disconnect((leader + 2) % servers)
 	cfg.disconnect((leader + 3) % servers)
@@ -250,6 +260,11 @@ func TestFailNoAgree2B(t *testing.T) {
 		t.Fatalf("%v committed but no majority", n)
 	}
 
+	println()
+	println("************************************ co", (leader+1)%servers,
+		(leader+2)%servers,
+		(leader+3)%servers)
+	println()
 	// repair
 	cfg.connect((leader + 1) % servers)
 	cfg.connect((leader + 2) % servers)
@@ -269,7 +284,7 @@ func TestFailNoAgree2B(t *testing.T) {
 	cfg.one(1000, servers, true)
 
 	cfg.end()
-}
+} //ok
 
 func TestConcurrentStarts2B(t *testing.T) {
 	servers := 3
@@ -408,7 +423,7 @@ func TestRejoin2B(t *testing.T) {
 	cfg.one(105, servers, true)
 
 	cfg.end()
-}
+} //ok
 
 func TestBackup2B(t *testing.T) {
 	servers := 5
@@ -421,6 +436,11 @@ func TestBackup2B(t *testing.T) {
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
+	fmt.Printf("****** disco %v %v %v\n",
+		(leader1+2)%servers,
+		(leader1+3)%servers,
+		(leader1+4)%servers,
+	)
 	cfg.disconnect((leader1 + 2) % servers)
 	cfg.disconnect((leader1 + 3) % servers)
 	cfg.disconnect((leader1 + 4) % servers)
@@ -432,9 +452,18 @@ func TestBackup2B(t *testing.T) {
 
 	time.Sleep(RaftElectionTimeout / 2)
 
+	fmt.Printf("****** disco %v %v\n",
+		(leader1+0)%servers,
+		(leader1+1)%servers,
+	)
 	cfg.disconnect((leader1 + 0) % servers)
 	cfg.disconnect((leader1 + 1) % servers)
 
+	fmt.Printf("****** co %v %v %v\n",
+		(leader1+2)%servers,
+		(leader1+3)%servers,
+		(leader1+4)%servers,
+	)
 	// allow other partition to recover
 	cfg.connect((leader1 + 2) % servers)
 	cfg.connect((leader1 + 3) % servers)
