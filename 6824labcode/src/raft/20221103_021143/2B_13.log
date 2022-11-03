@@ -1,0 +1,48 @@
+Test (2B): basic agreement ...
+holdleader: 2 term: 1
+holdleader: 1 term: 2
+--- FAIL: TestBasicAgree2Bxiang153 (2.28s)
+    config.go:546: one(100) failed to reach agreement
+Test (2B): RPC byte count ...
+holdleader: 2 term: 1
+holdleader: 1 term: 2
+  ................................................................... Passed --   1.2  3   58  115216   11
+Test (2B): agreement despite follower disconnection ...
+holdleader: 2 term: 1
+___cfg.disconnect((leader + 1) % servers) 0
+________________________________________cfg.connect((leader + 1) % servers) 0
+holdleader: 2 term: 3
+  ................................................................... Passed --   5.3  3  154   39226    8
+Test (2B): no agreement if too many followers disconnect ...
+holdleader: 2 term: 1
+
+************************************ disco 3 4 0
+
+
+************************************ co 3 4 0
+
+holdleader: 2 term: 3
+  ................................................................... Passed --   3.4  5  205   44689    3
+Test (2B): concurrent Start()s ...
+holdleader: 1 term: 1
+holdleader: 2 term: 2
+  ................................................................... Passed --   0.6  3   32    7954    6
+Test (2B): rejoin of partitioned leader ...
+holdleader: 0 term: 1
+holdleader: 2 term: 2
+holdleader: 1 term: 4
+  ................................................................... Passed --   8.1  3  284   68100    6
+Test (2B): leader backs up quickly over incorrect follower logs ...
+holdleader: 0 term: 2
+****** disco 2 3 4
+****** disco 0 1
+****** co 2 3 4
+holdleader: 4 term: 4
+holdleader: 2 term: 7
+  ................................................................... Passed --  24.7  5 1776  433650  103
+Test (2B): RPC counts aren't too high ...
+holdleader: 0 term: 2
+  ................................................................... Passed --   2.5  3   84   21704   12
+FAIL
+exit status 1
+FAIL	6.824/raft	48.114s
