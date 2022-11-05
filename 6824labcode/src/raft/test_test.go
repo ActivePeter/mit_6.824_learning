@@ -8,7 +8,10 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
+import (
+	"log"
+	"testing"
+)
 import "fmt"
 import "time"
 import "math/rand"
@@ -29,6 +32,7 @@ func TestInitialElection2A(t *testing.T) {
 	// is a leader elected?
 	cfg.checkOneLeader()
 
+	log.Println("check term")
 	// sleep a bit to avoid racing with followers learning of the
 	// election, then check that all peers agree on the term.
 	time.Sleep(50 * time.Millisecond)
@@ -37,6 +41,7 @@ func TestInitialElection2A(t *testing.T) {
 		t.Fatalf("term is %v, but should be at least 1", term1)
 	}
 
+	log.Println("check leader constant")
 	// does the leader+term stay the same if there is no network failure?
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
@@ -110,6 +115,7 @@ func TestManyElections2A(t *testing.T) {
 		i1 := rand.Int() % servers
 		i2 := rand.Int() % servers
 		i3 := rand.Int() % servers
+		fmt.Printf("disco %v %v %v\n",i1,i2,i3)
 		cfg.disconnect(i1)
 		cfg.disconnect(i2)
 		cfg.disconnect(i3)
@@ -118,6 +124,7 @@ func TestManyElections2A(t *testing.T) {
 		// or the remaining four should elect a new one.
 		cfg.checkOneLeader()
 
+		fmt.Printf("co back\n")
 		cfg.connect(i1)
 		cfg.connect(i2)
 		cfg.connect(i3)
